@@ -493,6 +493,7 @@ BarWidget {
       clip: true
 
       Text {
+        textFormat: Text.PlainText
         id: labelText
         text: root.viewArtist ? (root.viewArtist + " — " + root.viewTitle) : root.viewTitle
         color: root.bar ? root.bar.foreground : Color.foreground
@@ -535,12 +536,34 @@ BarWidget {
       if (root.following || !root.activePlayer) return
       root.act(wheel.angleDelta.y > 0 ? "previous" : "next")
     }
+    // Every string in here comes off the server — track, artist and the name
+    // the other device reports — and the tooltip is drawn by the shell's own
+    // `PanelToolTip`, which leaves `textFormat` at the default `Text.AutoText`.
+    // This widget's own labels are pinned to `Text.PlainText`, but that pin
+    // cannot reach a Text element it does not own, so the string is made
+    // markup-free before it is handed over.
     onEntered: if (root.bar) root.bar.showTooltip(root, root.active
-      ? ((root.following ? root.followedPlayer + ":  " : "")
+      ? root.plain((root.following ? root.followedPlayer + ":  " : "")
          + root.viewTitle + (root.viewArtist ? " — " + root.viewArtist : "")
          + (root.quality ? "  ·  " + root.quality : ""))
       : "")
     onExited: if (root.bar) root.bar.hideTooltip(root)
+  }
+
+  // Strip what would make a string stop being a string.
+  //
+  // A Text element left at `Text.AutoText` promotes anything that looks like
+  // markup to rich text, and rich text with an embedded remote reference makes
+  // the shell fetch it — inside a process that stays alive for the whole
+  // session. Track titles, artist names and the client names other devices
+  // report all arrive from the Navidrome server, so they are treated as data:
+  // `<` is removed outright rather than escaped, because an escaped entity only
+  // renders correctly if the consumer is *already* in rich-text mode, and the
+  // point is that it never should be. Control characters go too, so a crafted
+  // name cannot break a one-line tooltip into several.
+  function plain(s) {
+    return String(s === undefined || s === null ? "" : s)
+             .replace(/[<\x00-\x1f\x7f]/g, "")
   }
 
   function act(action) {
@@ -575,6 +598,7 @@ BarWidget {
         spacing: Style.space(6)
 
         Text {
+          textFormat: Text.PlainText
           anchors.verticalCenter: parent.verticalCenter
           // Says plainly when the device has gone quiet, instead of leaving a
           // frozen track looking live. The view still does not move on its own.
@@ -589,6 +613,7 @@ BarWidget {
         Item { width: parent.width - 200; height: 1 }
 
         Text {
+          textFormat: Text.PlainText
           id: backLink
           anchors.verticalCenter: parent.verticalCenter
           text: "BACK"
@@ -663,6 +688,7 @@ BarWidget {
           }
 
           Text {
+            textFormat: Text.PlainText
             anchors.centerIn: parent
             visible: root.coverPath === ""
                      && (root.following || !root.activePlayer || !root.activePlayer.trackArtUrl)
@@ -678,6 +704,7 @@ BarWidget {
           width: parent.width - Style.space(74)
 
           Text {
+            textFormat: Text.PlainText
             text: root.viewTitle || "Nothing playing"
             color: popup.fg
             font.family: popup.fontFamily
@@ -688,6 +715,7 @@ BarWidget {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: root.viewArtist
             color: Qt.darker(popup.fg, 1.3)
             font.family: popup.fontFamily
@@ -698,6 +726,7 @@ BarWidget {
           }
 
           Text {
+            textFormat: Text.PlainText
             text: root.viewAlbum
             color: Qt.darker(popup.fg, 1.6)
             font.family: popup.fontFamily
@@ -711,6 +740,7 @@ BarWidget {
           // you are hearing the good copy, which is the point of running your
           // own library.
           Text {
+            textFormat: Text.PlainText
             text: {
               var bits = []
               if (root.quality) bits.push(root.quality)
@@ -752,6 +782,7 @@ BarWidget {
         }
 
         Text {
+          textFormat: Text.PlainText
           width: parent.width
           text: {
             function clock(ms) {
@@ -829,6 +860,7 @@ BarWidget {
         spacing: Style.space(10)
 
         Text {
+          textFormat: Text.PlainText
           anchors.verticalCenter: parent.verticalCenter
           text: root.song && root.song.starred ? "♥" : "♡"
           color: popup.fg
@@ -855,6 +887,7 @@ BarWidget {
           Repeater {
             model: 5
             Text {
+              textFormat: Text.PlainText
               required property int index
               readonly property int value: index + 1
               readonly property int current: root.song && root.song.rating ? root.song.rating : 0
@@ -879,6 +912,7 @@ BarWidget {
       }
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         visible: !root.serverOk
         text: "Navidrome is not reachable — stars, ratings and other devices are unavailable."
@@ -899,6 +933,7 @@ BarWidget {
         spacing: Style.space(3)
 
         Text {
+          textFormat: Text.PlainText
           text: "PLAYING ELSEWHERE"
           color: Qt.darker(popup.fg, 1.5)
           font.family: popup.fontFamily
@@ -916,6 +951,7 @@ BarWidget {
             readonly property bool isFollowed: String(modelData.player) === root.followedPlayer
 
             Text {
+              textFormat: Text.PlainText
               id: sessionText
               anchors.verticalCenter: parent.verticalCenter
               width: parent.width
@@ -947,6 +983,7 @@ BarWidget {
         }
 
         Text {
+          textFormat: Text.PlainText
           width: parent.width
           text: "Click a device to follow it in the bar."
           color: Qt.darker(popup.fg, 1.8)

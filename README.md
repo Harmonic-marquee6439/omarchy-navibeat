@@ -197,15 +197,55 @@ name, state, position and duration. Position arrives only once per poll, so it i
 advanced locally between polls and re-anchored on each one; without that the
 progress bar would look frozen for eight seconds at a time.
 
+## What it trusts
+
+The server is your own, but the widget does not take that as licence to believe
+whatever comes back from it. A Navidrome instance can be shared, reachable from
+outside, or simply serving tags somebody else wrote, and everything below holds
+either way.
+
+**Nothing is read without a limit.** Every API response, every configuration
+file and every piece of cover art is read through a hard byte cap that is
+checked *before* the bytes are parsed or returned — 4 MiB for a JSON response,
+8 MiB for cover art, 256 KiB for a config file. Cover art is streamed straight
+to disk in 64 KiB chunks rather than being assembled in memory, so a server that
+keeps sending cannot grow the helper or fill the disk; it is cut off at the cap.
+
+**Paths cannot be redirected.** The config and cache directories are opened one
+component at a time with `O_NOFOLLOW`, and each descriptor is checked to be a
+directory owned by you and not writable by anyone else — the two directories
+this plugin owns are tightened to `0700` in place if they are not, since a mode
+passed to `makedirs` does nothing to a directory that already exists. Files are
+then opened relative to those descriptors instead of by walking a path a second
+time. Writes land in a randomly named temporary file created `O_EXCL |
+O_NOFOLLOW` at `0600` and are published with a descriptor-relative rename, so a
+symlink planted in advance is refused rather than followed. Cover art is stored
+under the SHA-256 of its id, never under the id itself, so a server-supplied
+identifier cannot steer a download out of the cache directory.
+
+**Credentials stay with the server they belong to.** The password is never sent
+— Subsonic salted-token authentication hashes it with a fresh salt per request —
+the configured URL must be `http://` or `https://`, and a redirect that leaves
+that host is refused rather than followed, because the auth token travels in the
+query string. An http→https upgrade on the same host still works.
+
+**Server text is drawn as text.** Track titles, artist names and the client
+names other devices report are rendered by `Text` elements pinned to
+`Text.PlainText`, and the one string that leaves for a shell-owned element — the
+bar tooltip — has markup and control characters removed first. Nothing the
+server returns can be promoted to rich text inside the shell process, which is
+what would otherwise let a crafted tag make it fetch a remote resource.
+
 ## Files it writes
 
 | Path | Contents |
 | --- | --- |
 | `~/.config/omarchy-navibeat/prefs.json` | artwork style |
 | `~/.config/omarchy-navibeat/config.json` | credentials, only if you are not using NaviBeat |
-| `~/.cache/omarchy-navibeat/` | downloaded covers |
+| `~/.cache/omarchy-navibeat/` | downloaded covers, named by content hash |
 
-Nothing is sent anywhere except your own server.
+Both directories are created `0700` and every file in them `0600`. Nothing is
+sent anywhere except your own server.
 
 ## Troubleshooting
 

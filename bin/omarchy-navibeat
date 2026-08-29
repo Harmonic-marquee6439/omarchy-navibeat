@@ -11,6 +11,20 @@ Credentials are read from NaviBeat's own config when it is installed
 standalone `~/.config/omarchy-navibeat/config.json` with the same keys works too
 for people who use another client.
 
+Everything this reads is bounded and everything it writes is confined:
+
+* Every response and every file is read through a hard byte cap, checked
+  *before* the bytes are parsed or returned. Cover art is streamed to disk
+  through the same cap rather than being held in memory, so a server that keeps
+  sending cannot grow this process or fill the disk.
+* The config and cache directories are reached by walking one component at a
+  time with `O_NOFOLLOW`, and each descriptor is verified to be a directory
+  owned by this user and not writable by anyone else. Files are opened relative
+  to those descriptors, never by re-walking a path a second time.
+* Writes go to a randomly named temporary file created `O_EXCL | O_NOFOLLOW`
+  at mode 0600, then get published with a descriptor-relative rename. A
+  pre-planted symlink cannot redirect a read or a write anywhere.
+
 Commands:
   status                    JSON: server reachable, plus what is playing elsewhere
   find <artist>|<album>|<title>
@@ -25,22 +39,50 @@ Commands:
   ping                      check the server
 """
 
+import errno
 import hashlib
 import json
 import os
+import re
 import secrets
+import stat
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
-NAVIBEAT_CREDS = os.path.expanduser("~/.config/navibeat/credentials.json")
-OWN_CFG = os.path.expanduser("~/.config/omarchy-navibeat/config.json")
-CACHE_DIR = os.path.expanduser("~/.cache/omarchy-navibeat")
-PREFS = os.path.expanduser("~/.config/omarchy-navibeat/prefs.json")
+HOME = os.path.expanduser("~")
+
+# Directory paths as components, never as strings to be re-walked: each one is
+# opened a component at a time so no part of it can be a symlink.
+NAVIBEAT_CFG_DIR = (".config", "navibeat")
+OWN_CFG_DIR = (".config", "omarchy-navibeat")
+CACHE_DIR = (".cache", "omarchy-navibeat")
+
+CREDS_FILE = "credentials.json"
+OWN_CFG_FILE = "config.json"
+PREFS_FILE = "prefs.json"
 
 API_VERSION = "1.16.1"
 CLIENT = "omarchy-navibeat"
 TIMEOUT = 8
+
+# Caps. Every read is checked against one of these before anything is parsed or
+# handed back. Generous enough that no real library hits them, small enough that
+# a hostile or broken server cannot exhaust memory or disk.
+MAX_API_BYTES = 4 * 1024 * 1024      # a JSON API response
+MAX_COVER_BYTES = 8 * 1024 * 1024    # one piece of cover art
+MAX_CONFIG_BYTES = 256 * 1024        # credentials, config, prefs
+CHUNK = 64 * 1024
+
+# Preferences are ours and tiny; bounding them keeps the file from growing.
+PREF_KEY_RE = re.compile(r"\A[A-Za-z0-9_-]{1,32}\Z")
+MAX_PREF_VALUE = 256
+MAX_PREFS_KEYS = 64
+
+
+class Unsafe(Exception):
+    """A path or a response failed one of the checks above."""
 
 
 def _die(msg, code=1):
@@ -48,12 +90,195 @@ def _die(msg, code=1):
     sys.exit(code)
 
 
-def _load_json(path):
+# ------------------------------------------------------------- safe file I/O
+
+def _check_dir(fd, shown, own):
+    """A directory descriptor is only usable if it is a directory, ours, and
+    not writable by anyone else.
+
+    `own` marks the two directories this plugin creates and maintains. Those we
+    tighten in place — `os.makedirs(mode=...)` does nothing to a directory that
+    already exists, so a mode set at creation time proves nothing later. Any
+    other directory on the way belongs to something else, so a wrong mode is
+    reported rather than silently changed.
+    """
+    st = os.fstat(fd)
+    if not stat.S_ISDIR(st.st_mode):
+        raise Unsafe("%s is not a directory" % shown)
+    if st.st_uid != os.getuid():
+        raise Unsafe("%s is not owned by you" % shown)
+    if own:
+        if st.st_mode & 0o077:
+            os.fchmod(fd, 0o700)
+    elif st.st_mode & 0o022:
+        raise Unsafe("%s is writable by other users" % shown)
+
+
+def _open_child_dir(parent_fd, name, shown, create, own):
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, ValueError):
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        if not create:
+            raise
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as e:
+        # With O_DIRECTORY in the flags, a symlink trips ENOTDIR rather than the
+        # ELOOP a plain O_NOFOLLOW open would give — and ENOTDIR is equally
+        # disqualifying when it means the component is a regular file.
+        if e.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise Unsafe("%s is a symlink or not a directory" % shown)
+        raise
+    try:
+        _check_dir(fd, shown, own)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _open_dir(parts, create=False, own=False):
+    """Open a directory under $HOME without ever following a symlink.
+
+    The walk is anchored at the home directory and every component below it is
+    opened `O_NOFOLLOW` from the descriptor of its parent, so the path cannot be
+    swapped underneath us between one component and the next. `own` applies to
+    the last component only — the intermediate `.config` and `.cache` belong to
+    everything else on the system, not to us.
+
+    The caller closes the returned descriptor.
+    """
+    fd = os.open(HOME, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        _check_dir(fd, HOME, False)
+        shown = HOME
+        for i, comp in enumerate(parts):
+            shown = os.path.join(shown, comp)
+            child = _open_child_dir(fd, comp, shown, create, own and i == len(parts) - 1)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _read_file(dir_fd, name, limit):
+    """A bounded, no-follow read of one regular file we own."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    except OSError as e:
+        if e.errno in (errno.ELOOP, errno.EMLINK):
+            raise Unsafe("%s is a symlink" % name)
+        raise
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise Unsafe("%s is not a regular file" % name)
+        if st.st_uid != os.getuid():
+            raise Unsafe("%s is not owned by you" % name)
+        if st.st_size > limit:
+            raise Unsafe("%s is larger than %d bytes" % (name, limit))
+        buf = b""
+        # One byte past the cap is read on purpose: a file that grew between the
+        # fstat and the read is then caught rather than silently truncated.
+        while len(buf) <= limit:
+            chunk = os.read(fd, min(CHUNK, limit + 1 - len(buf)))
+            if not chunk:
+                break
+            buf += chunk
+        if len(buf) > limit:
+            raise Unsafe("%s is larger than %d bytes" % (name, limit))
+        return buf
+    finally:
+        os.close(fd)
+
+
+def _write_all(fd, data):
+    while data:
+        data = data[os.write(fd, data):]
+
+
+def _write_private(dir_fd, name, body):
+    """Publish a private file atomically, relative to a verified descriptor.
+
+    The temporary name is random and created `O_EXCL | O_NOFOLLOW` at 0600, so
+    it cannot collide with, or be pre-empted by, anything already sitting in the
+    directory; the rename happens with both ends given as descriptors rather
+    than as paths walked a second time. `body` is called with the open fd.
+    """
+    tmp = ".%s.%s.tmp" % (name, secrets.token_hex(8))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=dir_fd)
+    try:
+        body(fd)
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        try:
+            os.unlink(tmp, dir_fd=dir_fd)
+        except OSError:
+            pass
+        raise
+    os.close(fd)
+    try:
+        os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=dir_fd)
+        except OSError:
+            pass
+        raise
+
+
+def _read_json(parts, name, limit=MAX_CONFIG_BYTES):
+    """Read one JSON file, or None if it is missing, oversized or not ours."""
+    try:
+        dir_fd = _open_dir(parts, create=False)
+    except (OSError, Unsafe):
         return None
+    try:
+        return json.loads(_read_file(dir_fd, name, limit).decode("utf-8"))
+    except (OSError, ValueError, Unsafe):
+        return None
+    finally:
+        os.close(dir_fd)
+
+
+# ------------------------------------------------------------------ requests
+
+class _SameHostRedirect(urllib.request.HTTPRedirectHandler):
+    """Redirects may not leave the host the credentials were meant for.
+
+    A Subsonic call carries the auth token in its query string, so a redirect to
+    somewhere else would hand that token to whatever host the response names.
+    Staying on the same host still allows the ordinary http -> https upgrade a
+    reverse proxy performs.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old = urllib.parse.urlsplit(req.full_url)
+        new = urllib.parse.urlsplit(newurl)
+        if new.scheme not in ("http", "https") or new.hostname != old.hostname:
+            raise urllib.error.HTTPError(
+                req.full_url, code,
+                "refusing to follow a redirect off %s" % (old.hostname or "the server"),
+                headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = None
+
+
+def _opener():
+    global _OPENER
+    if _OPENER is None:
+        _OPENER = urllib.request.build_opener(_SameHostRedirect)
+    return _OPENER
+
+
+_CREDS = None
 
 
 def credentials():
@@ -63,43 +288,70 @@ def credentials():
     `localUrl` is preferred over `baseUrl`: on the LAN it avoids a round trip
     through whatever public hostname the account is configured with.
     """
-    c = _load_json(NAVIBEAT_CREDS) or _load_json(OWN_CFG)
+    global _CREDS
+    if _CREDS is not None:
+        return _CREDS
+    c = (_read_json(NAVIBEAT_CFG_DIR, CREDS_FILE)
+         or _read_json(OWN_CFG_DIR, OWN_CFG_FILE))
     if not c:
         _die("no Navidrome credentials found. Install and sign into NaviBeat, or "
-             "write %s with baseUrl, username and password." % OWN_CFG, 3)
-    base = (c.get("localUrl") or c.get("baseUrl") or "").rstrip("/")
-    if not base or not c.get("username") or not c.get("password"):
+             "write ~/%s/%s with baseUrl, username and password."
+             % ("/".join(OWN_CFG_DIR), OWN_CFG_FILE), 3)
+    if not isinstance(c, dict):
+        _die("credentials file is not a JSON object", 3)
+    base = str(c.get("localUrl") or c.get("baseUrl") or "").rstrip("/")
+    user, password = c.get("username"), c.get("password")
+    if not base or not user or not password:
         _die("credentials are incomplete (need baseUrl/localUrl, username, password)", 3)
-    return base, c["username"], c["password"]
+    # The base URL decides where the token goes, so it has to be a real remote
+    # endpoint — not `file:` or anything else the opener would otherwise accept.
+    parsed = urllib.parse.urlsplit(base)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        _die("server URL must be http:// or https:// (got %r)" % base, 3)
+    _CREDS = (base, str(user), str(password))
+    return _CREDS
 
 
-def call(view, **params):
+def _url(view, params):
     """Subsonic salted-token auth: the password itself never goes over the wire."""
-    base, user, password = credentials()
-    salt = secrets.token_hex(8)
-    token = hashlib.md5((password + salt).encode()).hexdigest()
-    q = dict(u=user, t=token, s=salt, v=API_VERSION, c=CLIENT, f="json")
-    q.update({k: v for k, v in params.items() if v is not None})
-    url = "%s/rest/%s?%s" % (base, view, urllib.parse.urlencode(q))
-    with urllib.request.urlopen(url, timeout=TIMEOUT) as r:
-        body = json.loads(r.read().decode())
-    resp = body.get("subsonic-response") or {}
-    if resp.get("status") != "ok":
-        err = resp.get("error") or {}
-        raise RuntimeError(err.get("message") or "subsonic error %s" % err.get("code"))
-    return resp
-
-
-def call_raw(view, **params):
-    """For endpoints that return bytes rather than JSON (cover art)."""
     base, user, password = credentials()
     salt = secrets.token_hex(8)
     token = hashlib.md5((password + salt).encode()).hexdigest()
     q = dict(u=user, t=token, s=salt, v=API_VERSION, c=CLIENT)
     q.update({k: v for k, v in params.items() if v is not None})
-    url = "%s/rest/%s?%s" % (base, view, urllib.parse.urlencode(q))
-    with urllib.request.urlopen(url, timeout=TIMEOUT) as r:
-        return r.read(), r.headers.get("Content-Type", "")
+    return "%s/rest/%s?%s" % (base, view, urllib.parse.urlencode(q))
+
+
+def _read_capped(resp, limit, what):
+    """Read a response body, refusing anything past the cap.
+
+    The declared length is checked first when there is one, but it is only a
+    hint — the read itself is what enforces the limit.
+    """
+    declared = resp.headers.get("Content-Length")
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise Unsafe("%s is larger than %d bytes" % (what, limit))
+    buf = b""
+    while len(buf) <= limit:
+        chunk = resp.read(min(CHUNK, limit + 1 - len(buf)))
+        if not chunk:
+            break
+        buf += chunk
+    if len(buf) > limit:
+        raise Unsafe("%s is larger than %d bytes" % (what, limit))
+    return buf
+
+
+def call(view, **params):
+    q = dict(params)
+    q["f"] = "json"
+    with _opener().open(_url(view, q), timeout=TIMEOUT) as r:
+        body = json.loads(_read_capped(r, MAX_API_BYTES, "server response").decode("utf-8"))
+    resp = (body or {}).get("subsonic-response") or {}
+    if resp.get("status") != "ok":
+        err = resp.get("error") or {}
+        raise RuntimeError(err.get("message") or "subsonic error %s" % err.get("code"))
+    return resp
 
 
 # ------------------------------------------------------------------ shaping
@@ -225,24 +477,79 @@ def cmd_find(spec):
     print(json.dumps(song_record(find_song(artist, album, title)) or {}))
 
 
+def _cache_name(song_id, size):
+    """A cache file name derived from the id rather than built out of it.
+
+    Song ids come off the server, and pasting one into a path is how `../` ends
+    up deciding where a download lands. Hashing removes the question: the name
+    is always 64 hex characters and one extension, whatever the id contains.
+    """
+    key = "%s\x00%s" % (song_id, size or "full")
+    return hashlib.sha256(key.encode("utf-8")).hexdigest() + ".img"
+
+
+def _is_ours(dir_fd, name):
+    """Is this cache entry a plain file of ours, or something planted?"""
+    try:
+        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid()
+
+
 def cmd_cover(song_id, size=None):
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    name = "%s-%s.img" % (song_id, size or "full")
-    path = os.path.join(CACHE_DIR, name)
-    if not os.path.exists(path):
-        data, _ = call_raw("getCoverArt.view", id=song_id, size=size)
-        tmp = path + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
-    print(path)
+    if size is not None:
+        # Only ever our own pixel size, but it lands in a URL and in a file
+        # name, so it is made a number rather than trusted to be one.
+        try:
+            size = str(max(1, min(4096, int(size))))
+        except (TypeError, ValueError):
+            size = None
+    name = _cache_name(song_id, size)
+    dir_fd = _open_dir(CACHE_DIR, create=True, own=True)
+    try:
+        path = os.path.join(HOME, *CACHE_DIR)
+        path = os.path.join(path, name)
+        if not _is_ours(dir_fd, name):
+            # Anything sitting at that name which is not a plain file of ours
+            # gets removed rather than written through.
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except OSError:
+                pass
+            url = _url("getCoverArt.view", {"id": song_id, "size": size})
+            with _opener().open(url, timeout=TIMEOUT) as r:
+                declared = r.headers.get("Content-Length")
+                if declared and declared.isdigit() and int(declared) > MAX_COVER_BYTES:
+                    raise Unsafe("cover art is larger than %d bytes" % MAX_COVER_BYTES)
+
+                def body(fd, resp=r):
+                    # Streamed, never buffered whole: the cap stops a server
+                    # that keeps sending before it costs memory or disk.
+                    total = 0
+                    while True:
+                        chunk = resp.read(min(CHUNK, MAX_COVER_BYTES + 1 - total))
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_COVER_BYTES:
+                            raise Unsafe("cover art is larger than %d bytes"
+                                         % MAX_COVER_BYTES)
+                        _write_all(fd, chunk)
+
+                _write_private(dir_fd, name, body)
+        print(path)
+    finally:
+        os.close(dir_fd)
 
 
 def cmd_pref(args):
     """Small persistent preferences. The shell's widget settings are read-only
     from QML, and a choice made by clicking the artwork should still be there
     after a restart, so it lives in a file of our own."""
-    prefs = _load_json(PREFS) or {}
+    prefs = _read_json(OWN_CFG_DIR, PREFS_FILE) or {}
+    if not isinstance(prefs, dict):
+        prefs = {}
     if len(args) < 2:
         print(json.dumps(prefs))
         return
@@ -250,12 +557,20 @@ def cmd_pref(args):
     if len(args) == 2:
         print(json.dumps({key: prefs.get(key)}))
         return
-    prefs[key] = args[2]
-    os.makedirs(os.path.dirname(PREFS), mode=0o700, exist_ok=True)
-    tmp = PREFS + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(prefs, f, indent=1)
-    os.replace(tmp, PREFS)
+    value = args[2]
+    if not PREF_KEY_RE.match(key):
+        _die("preference names are 1-32 characters of [A-Za-z0-9_-]", 2)
+    if len(value) > MAX_PREF_VALUE:
+        _die("preference values are at most %d characters" % MAX_PREF_VALUE, 2)
+    if key not in prefs and len(prefs) >= MAX_PREFS_KEYS:
+        _die("too many preferences stored", 2)
+    prefs[key] = value
+    blob = json.dumps(prefs, indent=1).encode("utf-8")
+    dir_fd = _open_dir(OWN_CFG_DIR, create=True, own=True)
+    try:
+        _write_private(dir_fd, PREFS_FILE, lambda fd: _write_all(fd, blob))
+    finally:
+        os.close(dir_fd)
     print(json.dumps({key: prefs[key]}))
 
 
