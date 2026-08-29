@@ -68,8 +68,10 @@ hashes it with a fresh salt on every request.
 
 ## Using it
 
-The bar shows a waveform and the current track, and **disappears entirely when
-nothing is playing** and nothing is being followed.
+The bar shows a waveform and the current track. It is there **from the moment the
+music app is running**, not only once something is playing — an idle app still
+gets its place in the bar. It disappears only when the app is closed and no
+device is being followed.
 
 | Action | Result |
 | --- | --- |
@@ -87,6 +89,12 @@ nothing is playing** and nothing is being followed.
 Click a session under **playing elsewhere** and the bar follows that device
 instead: its track scrolls in the top bar, with the artwork and a live progress
 bar. `BACK` returns to this machine.
+
+**What you are watching only ever changes when you click.** If the followed
+device pauses, sleeps or drops off the network it stops reporting within a
+minute — the panel then says `IDLE` and keeps showing what it last saw. It does
+not quietly snap back to local playback, because a view that moves out from
+under you is worse than a stale one.
 
 It is deliberately **read-only**. The Subsonic protocol has no command that
 controls another client — even NaviBeat's own handoff works by the *taken-over*
@@ -130,6 +138,7 @@ panel is open so the two are never moving at once.
 | `showLabel` | `true` | show the track name next to the icon |
 | `maxLabelWidth` | `180` | how much bar width the name may take |
 | `localDevice` | `NaviBeat Linux` | this machine's client name, filtered out of *playing elsewhere* |
+| `appPlayer` | `navibeat` | MPRIS player whose mere presence keeps the widget in the bar |
 
 ```sh
 omarchy bar set nenadjokic.navibeat maxLabelWidth 120
@@ -160,6 +169,7 @@ qs -p /usr/share/omarchy/shell ipc call nenadjokic.navibeat toggle
 qs -p /usr/share/omarchy/shell ipc call nenadjokic.navibeat star
 qs -p /usr/share/omarchy/shell ipc call nenadjokic.navibeat art
 qs -p /usr/share/omarchy/shell ipc call nenadjokic.navibeat follow "NaviBeat Mac"
+qs -p /usr/share/omarchy/shell ipc call nenadjokic.navibeat probe   # why it is/isn't shown
 ```
 
 ## How it works

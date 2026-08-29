@@ -21,7 +21,8 @@
     "defaults": {
       "maxLabelWidth": 180,
       "showLabel": true,
-      "localDevice": "NaviBeat Linux"
+      "localDevice": "NaviBeat Linux",
+      "appPlayer": "navibeat"
     },
     "schema": [
       {
@@ -44,6 +45,12 @@
         "type": "string",
         "label": "This machine's NaviBeat client name",
         "defaultValue": "NaviBeat Linux"
+      },
+      {
+        "key": "appPlayer",
+        "type": "string",
+        "label": "Player whose presence keeps the widget in the bar",
+        "defaultValue": "navibeat"
       }
     ]
   }

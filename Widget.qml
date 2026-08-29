@@ -33,6 +33,28 @@ BarWidget {
   readonly property var activePlayer: mediaService ? mediaService.activePlayer : null
 
   readonly property bool hasLocal: activePlayer !== null && (activePlayer.trackTitle || activePlayer.trackArtist)
+
+  // Is the music app itself running, whether or not it has a track loaded?
+  //
+  // The built-in media widget appears only once something has metadata, which
+  // is right for a generic now-playing widget but wrong here: this one is the
+  // app's own bar presence, so it should be there from the moment the app is
+  // opened, before anything is played. Every player is checked rather than just
+  // the active one, because an idle app is not what `selectActivePlayer` picks
+  // when something else is already playing.
+  readonly property string appPlayer: String(setting("appPlayer", "navibeat")).toLowerCase()
+  readonly property bool appRunning: {
+    if (!root.mediaService || root.appPlayer === "") return false
+    var list = root.mediaService.players || []
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i]
+      if (!p) continue
+      var de = String(p.desktopEntry || "").toLowerCase()
+      var id = String(p.identity || "").toLowerCase()
+      if (de === root.appPlayer || id === root.appPlayer) return true
+    }
+    return false
+  }
   readonly property string localTitle: activePlayer ? (activePlayer.trackTitle || "") : ""
   readonly property string localArtist: activePlayer ? (activePlayer.trackArtist || "") : ""
   readonly property string localAlbum: activePlayer && activePlayer.trackAlbum ? activePlayer.trackAlbum : ""
@@ -62,12 +84,26 @@ BarWidget {
   property string followedPlayer: ""
   readonly property bool following: followedPlayer !== ""
 
-  readonly property var followed: {
+  // The followed session as the server currently reports it, or null when that
+  // device has stopped reporting.
+  readonly property var liveSession: {
     if (!root.following) return null
     for (var i = 0; i < root.sessions.length; i++)
       if (String(root.sessions[i].player) === root.followedPlayer) return root.sessions[i]
     return null
   }
+
+  // The last session seen for the followed device, kept so that following
+  // survives the device going quiet.
+  property var lastSession: null
+
+  // What the panel draws while following. Falls back to the remembered session
+  // rather than to this machine: **choosing what to watch is a click, never
+  // something the widget decides.** A device that pauses, sleeps or drops off
+  // the network stops reporting within a minute, and silently snapping back to
+  // local playback would move the view out from under you.
+  readonly property var followed: liveSession || lastSession
+  readonly property bool followedStale: following && liveSession === null
 
   // Other people's devices. Anything reporting our own client name is this
   // machine, however many local players are running under it.
@@ -82,14 +118,15 @@ BarWidget {
 
   // ------------------------------------------------------- what to display
 
-  readonly property bool active: following ? followed !== null : hasLocal
+  readonly property bool active: following ? true : (hasLocal || appRunning)
   readonly property string viewTitle: following ? (followed ? String(followed.title) : "") : localTitle
   readonly property string viewArtist: following ? (followed ? String(followed.artist) : "") : localArtist
   readonly property string viewAlbum: following ? (followed ? String(followed.album) : "") : localAlbum
   // "starting" is a real state in NaviBeat's protocol: a client that has just
   // been handed a track reports it before its first progress tick.
   readonly property bool viewPlaying: following
-      ? (followed ? (followed.state === "playing" || followed.state === "starting") : false)
+      ? (!followedStale && followed
+         ? (followed.state === "playing" || followed.state === "starting") : false)
       : localPlaying
 
   readonly property string viewSongId: {
@@ -250,6 +287,7 @@ BarWidget {
 
   function follow(player) {
     root.followedPlayer = String(player)
+    root.lastSession = null
     root.song = ({})
     root.coverPath = ""
     root.anchorMs = 0
@@ -259,6 +297,7 @@ BarWidget {
 
   function unfollow() {
     root.followedPlayer = ""
+    root.lastSession = null
     root.song = ({})
     root.coverPath = ""
     root.localTrackChanged()
@@ -375,7 +414,8 @@ BarWidget {
         root.serverOk = d.ok === true
         root.sessions = d.elsewhere || []
 
-        if (root.following && root.followed) {
+        if (root.following && root.liveSession) {
+          root.lastSession = root.liveSession
           // Re-anchor the progress clock on every poll, and pull the star and
           // rating for whatever the followed device moved on to.
           root.anchorMs = root.followed.positionMs ? Number(root.followed.positionMs) : 0
@@ -394,10 +434,6 @@ BarWidget {
           }
           if (want !== "" && root.coverPath === "")
             root.loadCover(root.followed.coverArt || want)
-        } else if (root.following && !root.followed) {
-          // The device stopped reporting: fall back rather than freeze on a
-          // track that is no longer playing anywhere.
-          root.unfollow()
         }
       }
     }
@@ -415,6 +451,20 @@ BarWidget {
     function unfollow(): string { root.unfollow(); return "ok" }
     function star(): string { root.toggleStar(); return "ok" }
     function art(): string { root.toggleArt(); return root.artMode }
+    // Why the widget is (or is not) in the bar right now. Cheap to expose and
+    // the only way to tell "the app is running" apart from "a track is loaded"
+    // without guessing from the outside.
+    function probe(): string {
+      return JSON.stringify({
+        visible: root.active,
+        appRunning: root.appRunning,
+        hasTrack: root.hasLocal,
+        appPlayer: root.appPlayer,
+        players: (root.mediaService && root.mediaService.players
+                  ? root.mediaService.players.length : 0),
+        following: root.followedPlayer
+      })
+    }
   }
 
   // ------------------------------------------------------------------- bar
@@ -526,7 +576,10 @@ BarWidget {
 
         Text {
           anchors.verticalCenter: parent.verticalCenter
+          // Says plainly when the device has gone quiet, instead of leaving a
+          // frozen track looking live. The view still does not move on its own.
           text: "FOLLOWING " + root.followedPlayer.toUpperCase()
+                + (root.followedStale ? " · IDLE" : "")
           color: Qt.darker(popup.fg, 1.4)
           font.family: popup.fontFamily
           font.pixelSize: Style.font.caption
@@ -707,6 +760,9 @@ BarWidget {
               var s = t % 60
               return m + ":" + (s < 10 ? "0" : "") + s
             }
+            if (root.followedStale)
+              return clock(root.viewPositionMs) + " / " + clock(root.viewDurationMs)
+                     + "   " + root.followedPlayer + " stopped reporting"
             return clock(root.viewPositionMs) + " / " + clock(root.viewDurationMs)
                    + (root.viewPlaying ? "" : "   paused")
           }
