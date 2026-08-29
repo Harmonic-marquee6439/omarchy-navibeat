@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""Navidrome/Subsonic side of the NaviBeat bar widget.
+
+The widget gets *playback* from the first-party `omarchy.media` MPRIS service —
+that part needs no help. What MPRIS cannot give is anything that lives on the
+server: whether the track is starred, its rating, its real format and bitrate,
+and what is playing on your other devices. That is what this backend is for.
+
+Credentials are read from NaviBeat's own config when it is installed
+(`~/.config/navibeat/credentials.json`), so there is nothing to set up. A
+standalone `~/.config/omarchy-navibeat/config.json` with the same keys works too
+for people who use another client.
+
+Commands:
+  status                    JSON: server reachable, plus what is playing elsewhere
+  find <artist>|<album>|<title>
+                            resolve an MPRIS track to a server song (id, stars,
+                            rating, format, bitrate, play count)
+  song <id>                 the same record, by id
+  star <id> / unstar <id>   toggle the star, server side
+  rate <id> <0-5>           set the rating, server side (0 clears it)
+  cover <id> [px]           download the cover, print the local path
+  nowplaying                JSON: what every client is playing right now
+  pref [key] [value]        read or write a small persistent preference
+  ping                      check the server
+"""
+
+import hashlib
+import json
+import os
+import secrets
+import sys
+import urllib.parse
+import urllib.request
+
+NAVIBEAT_CREDS = os.path.expanduser("~/.config/navibeat/credentials.json")
+OWN_CFG = os.path.expanduser("~/.config/omarchy-navibeat/config.json")
+CACHE_DIR = os.path.expanduser("~/.cache/omarchy-navibeat")
+PREFS = os.path.expanduser("~/.config/omarchy-navibeat/prefs.json")
+
+API_VERSION = "1.16.1"
+CLIENT = "omarchy-navibeat"
+TIMEOUT = 8
+
+
+def _die(msg, code=1):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def _load_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def credentials():
+    """NaviBeat's own config first, our own second.
+
+    Reusing the client's credentials is the whole reason this needs no setup.
+    `localUrl` is preferred over `baseUrl`: on the LAN it avoids a round trip
+    through whatever public hostname the account is configured with.
+    """
+    c = _load_json(NAVIBEAT_CREDS) or _load_json(OWN_CFG)
+    if not c:
+        _die("no Navidrome credentials found. Install and sign into NaviBeat, or "
+             "write %s with baseUrl, username and password." % OWN_CFG, 3)
+    base = (c.get("localUrl") or c.get("baseUrl") or "").rstrip("/")
+    if not base or not c.get("username") or not c.get("password"):
+        _die("credentials are incomplete (need baseUrl/localUrl, username, password)", 3)
+    return base, c["username"], c["password"]
+
+
+def call(view, **params):
+    """Subsonic salted-token auth: the password itself never goes over the wire."""
+    base, user, password = credentials()
+    salt = secrets.token_hex(8)
+    token = hashlib.md5((password + salt).encode()).hexdigest()
+    q = dict(u=user, t=token, s=salt, v=API_VERSION, c=CLIENT, f="json")
+    q.update({k: v for k, v in params.items() if v is not None})
+    url = "%s/rest/%s?%s" % (base, view, urllib.parse.urlencode(q))
+    with urllib.request.urlopen(url, timeout=TIMEOUT) as r:
+        body = json.loads(r.read().decode())
+    resp = body.get("subsonic-response") or {}
+    if resp.get("status") != "ok":
+        err = resp.get("error") or {}
+        raise RuntimeError(err.get("message") or "subsonic error %s" % err.get("code"))
+    return resp
+
+
+def call_raw(view, **params):
+    """For endpoints that return bytes rather than JSON (cover art)."""
+    base, user, password = credentials()
+    salt = secrets.token_hex(8)
+    token = hashlib.md5((password + salt).encode()).hexdigest()
+    q = dict(u=user, t=token, s=salt, v=API_VERSION, c=CLIENT)
+    q.update({k: v for k, v in params.items() if v is not None})
+    url = "%s/rest/%s?%s" % (base, view, urllib.parse.urlencode(q))
+    with urllib.request.urlopen(url, timeout=TIMEOUT) as r:
+        return r.read(), r.headers.get("Content-Type", "")
+
+
+# ------------------------------------------------------------------ shaping
+
+def song_record(s):
+    """Only the fields the panel actually draws, with the server-side ones the
+    widget exists for: starred, rating, format and bitrate."""
+    if not s:
+        return None
+    return {
+        "id": s.get("id"),
+        "title": s.get("title", ""),
+        "artist": s.get("artist", ""),
+        "album": s.get("album", ""),
+        "albumId": s.get("albumId"),
+        "coverArt": s.get("coverArt"),
+        "starred": bool(s.get("starred")),
+        "rating": int(s.get("userRating") or 0),
+        "suffix": (s.get("suffix") or "").upper(),
+        "bitRate": s.get("bitRate"),
+        "duration": s.get("duration"),
+        "year": s.get("year"),
+        "playCount": s.get("playCount") or 0,
+    }
+
+
+def now_playing_record(e):
+    """One `getNowPlaying` session, shaped for the panel.
+
+    Everything here is what the entry already carries. `state`, `positionMs` and
+    `duration` are the interesting ones: they are what makes following another
+    device a live view rather than a stale label. NaviBeat's own handoff code
+    reads the same three, and treats `starting` as a real state alongside
+    `playing` and `paused` — a client that has just been handed a track reports
+    `starting` with a position it has not begun counting yet.
+    """
+    return {
+        "id": e.get("id"),
+        "title": e.get("title", ""),
+        "artist": e.get("artist", ""),
+        "album": e.get("album", ""),
+        "coverArt": e.get("coverArt") or e.get("id"),
+        "player": e.get("playerName") or "",
+        "playerId": e.get("playerId"),
+        "username": e.get("username", ""),
+        "state": (e.get("state") or "").lower(),
+        "positionMs": e.get("positionMs"),
+        "duration": e.get("duration"),
+        "suffix": (e.get("suffix") or "").upper(),
+        "bitRate": e.get("bitRate"),
+        "minutesAgo": e.get("minutesAgo", 0),
+    }
+
+
+def _norm(v):
+    return " ".join(str(v or "").lower().split())
+
+
+def find_song(artist, album, title):
+    """Resolve MPRIS metadata to a server song.
+
+    MPRIS gives free text, not ids, so the title is searched and the candidates
+    are scored on artist and album. Exact-ish matching matters: starring the
+    wrong track is worse than starring nothing, so a candidate that agrees on
+    neither artist nor album is rejected outright.
+    """
+    if not title:
+        return None
+    try:
+        res = call("search3.view", query=title, songCount=25, artistCount=0, albumCount=0)
+    except Exception:
+        return None
+    songs = ((res.get("searchResult3") or {}).get("song")) or []
+    if not songs:
+        return None
+    want_t, want_a, want_al = _norm(title), _norm(artist), _norm(album)
+    best, best_score = None, 0
+    for s in songs:
+        score = 0
+        if _norm(s.get("title")) == want_t:
+            score += 3
+        elif want_t and want_t in _norm(s.get("title")):
+            score += 1
+        if want_a and _norm(s.get("artist")) == want_a:
+            score += 3
+        elif want_a and want_a in _norm(s.get("artist")):
+            score += 1
+        if want_al and _norm(s.get("album")) == want_al:
+            score += 2
+        if score > best_score:
+            best, best_score = s, score
+    # Title alone is not enough — covers and live versions share titles across
+    # artists, and a wrong id here would star somebody else's recording.
+    if best_score < 4:
+        return None
+    return best
+
+
+# ----------------------------------------------------------------- commands
+
+def cmd_status():
+    out = {"ok": False, "elsewhere": []}
+    try:
+        p = call("ping.view")
+        out["ok"] = True
+        out["server"] = p.get("serverVersion", "")
+    except Exception as e:
+        out["error"] = str(e)
+        print(json.dumps(out))
+        return
+    try:
+        out["elsewhere"] = [now_playing_record(e) for e in
+                            ((call("getNowPlaying.view").get("nowPlaying") or {}).get("entry") or [])]
+    except Exception:
+        pass
+    print(json.dumps(out))
+
+
+def cmd_find(spec):
+    # Pipe-separated so titles containing spaces survive without quoting games.
+    parts = (spec.split("|") + ["", "", ""])[:3]
+    artist, album, title = parts[0].strip(), parts[1].strip(), parts[2].strip()
+    print(json.dumps(song_record(find_song(artist, album, title)) or {}))
+
+
+def cmd_cover(song_id, size=None):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    name = "%s-%s.img" % (song_id, size or "full")
+    path = os.path.join(CACHE_DIR, name)
+    if not os.path.exists(path):
+        data, _ = call_raw("getCoverArt.view", id=song_id, size=size)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    print(path)
+
+
+def cmd_pref(args):
+    """Small persistent preferences. The shell's widget settings are read-only
+    from QML, and a choice made by clicking the artwork should still be there
+    after a restart, so it lives in a file of our own."""
+    prefs = _load_json(PREFS) or {}
+    if len(args) < 2:
+        print(json.dumps(prefs))
+        return
+    key = args[1]
+    if len(args) == 2:
+        print(json.dumps({key: prefs.get(key)}))
+        return
+    prefs[key] = args[2]
+    os.makedirs(os.path.dirname(PREFS), mode=0o700, exist_ok=True)
+    tmp = PREFS + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(prefs, f, indent=1)
+    os.replace(tmp, PREFS)
+    print(json.dumps({key: prefs[key]}))
+
+
+def main():
+    args = sys.argv[1:]
+    cmd = args[0] if args else "status"
+    try:
+        if cmd == "status":
+            cmd_status()
+        elif cmd == "ping":
+            print(json.dumps({"server": call("ping.view").get("serverVersion", "")}))
+        elif cmd == "find":
+            if len(args) < 2:
+                _die("usage: omarchy-navibeat find '<artist>|<album>|<title>'")
+            cmd_find(args[1])
+        elif cmd == "song":
+            r = call("getSong.view", id=args[1])
+            print(json.dumps(song_record(r.get("song")) or {}))
+        elif cmd in ("star", "unstar"):
+            call(cmd + ".view", id=args[1])
+            print(json.dumps({"id": args[1], "starred": cmd == "star"}))
+        elif cmd == "rate":
+            rating = max(0, min(5, int(args[2])))
+            call("setRating.view", id=args[1], rating=rating)
+            print(json.dumps({"id": args[1], "rating": rating}))
+        elif cmd == "cover":
+            cmd_cover(args[1], args[2] if len(args) > 2 else None)
+        elif cmd == "pref":
+            cmd_pref(args)
+        elif cmd == "nowplaying":
+            np = call("getNowPlaying.view")
+            print(json.dumps((np.get("nowPlaying") or {}).get("entry") or []))
+        else:
+            _die(__doc__)
+    except IndexError:
+        _die(__doc__)
+    except Exception as e:
+        _die(str(e), 4)
+
+
+if __name__ == "__main__":
+    main()

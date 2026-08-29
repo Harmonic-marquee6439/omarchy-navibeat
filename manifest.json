@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "nenadjokic.navibeat",
+  "name": "NaviBeat",
+  "version": "1.0.0",
+  "author": "nenadjokic",
+  "license": "MIT",
+  "description": "Now playing in the Omarchy bar, with the parts only your own Navidrome server knows: star and rate the track server-side, see its real format and bitrate, and follow what is playing on another device.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "NaviBeat",
+    "description": "MPRIS now-playing plus Navidrome stars, ratings, quality and other-device activity.",
+    "category": "Media",
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "maxLabelWidth": 180,
+      "showLabel": true,
+      "localDevice": "NaviBeat Linux"
+    },
+    "schema": [
+      {
+        "key": "showLabel",
+        "type": "boolean",
+        "label": "Show track name in the bar",
+        "defaultValue": true
+      },
+      {
+        "key": "maxLabelWidth",
+        "type": "integer",
+        "label": "Maximum track name width (px)",
+        "min": 60,
+        "max": 480,
+        "step": 10,
+        "defaultValue": 180
+      },
+      {
+        "key": "localDevice",
+        "type": "string",
+        "label": "This machine's NaviBeat client name",
+        "defaultValue": "NaviBeat Linux"
+      }
+    ]
+  }
+}
