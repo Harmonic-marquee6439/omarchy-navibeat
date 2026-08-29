@@ -113,12 +113,15 @@ The choice is remembered across restarts.
 
 ### In the bar
 
-<img src="docs/bar.png" alt="The bar widget" width="420">
+<img src="docs/bar.png" alt="The bar widget" width="520">
 
 The waveform animates only while audio is actually playing, so it reads as a
-status light. Bars grow from the centre rather than from a baseline: an
-equalizer anchored to its floor puts all its weight at the bottom of the icon and
-reads as misaligned next to centred text.
+status light rather than as decoration. Bars grow from the centre rather than
+from a baseline: an equalizer anchored to its floor puts all its weight at the
+bottom of the icon and reads as misaligned next to centred text.
+
+A track name wider than `maxLabelWidth` scrolls, and stops scrolling while the
+panel is open so the two are never moving at once.
 
 ## Settings
 
