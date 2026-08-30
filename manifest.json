@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "nenadjokic",
   "license": "MIT",
-  "description": "Now playing in the Omarchy bar, with the parts only your own Navidrome server knows: star and rate the track server-side, see its real format and bitrate, and follow what is playing on another device.",
+  "description": "The NaviBeat companion for the Omarchy bar. Now playing from any MPRIS player, plus what only your own Navidrome server knows: star and rate the track server-side, see its real format and bitrate, and follow another device — and with NaviBeat running every track resolves to an exact server id instead of by search.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "NaviBeat",
-    "description": "MPRIS now-playing plus Navidrome stars, ratings, quality and other-device activity.",
+    "description": "NaviBeat companion: MPRIS now-playing plus Navidrome stars, ratings, quality and other-device activity.",
     "category": "Media",
     "allowMultiple": false,
     "defaultSection": "center",

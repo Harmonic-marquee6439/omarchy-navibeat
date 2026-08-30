@@ -2,7 +2,8 @@
 
 # NaviBeat for the Omarchy bar
 
-**Now playing in the bar, plus the parts only your own Navidrome server knows:
+**The companion widget for [NaviBeat Linux](https://github.com/nenadjokic/navibeat-linux).
+Now playing in the bar, plus the parts only your own Navidrome server knows:
 star and rate the track server-side, see its real format and bitrate, and follow
 what is playing on another device.**
 
@@ -24,18 +25,28 @@ layer on top.
 
 </div>
 
-> Works with any [Navidrome](https://www.navidrome.org) or OpenSubsonic server.
-> [NaviBeat](https://navibeat.app) is not required — it is just the client whose
-> credentials the widget will reuse if you have it, so that there is nothing to
-> configure.
+> **This is the widget for [NaviBeat Linux](https://github.com/nenadjokic/navibeat-linux)**
+> — the native Linux player for Navidrome and OpenSubsonic. With NaviBeat there is
+> nothing to configure: the widget reuses the credentials already on disk, and every
+> track resolves to an exact server id rather than being guessed at.
+>
+> It does still run without it, against any [Navidrome](https://www.navidrome.org)
+> or OpenSubsonic server and any MPRIS player, with two limits worth knowing up
+> front. The server-side half — stars, rating, format, bitrate, play count — applies
+> only to tracks that **exist in your own library**, so a stream from somewhere else
+> shows the title and nothing more. And for other players the track has to be matched
+> by searching title, artist and album, which is deliberately strict and will decline
+> to guess rather than star the wrong recording.
+>
+> NaviBeat is also on [Apple platforms](https://navibeat.app).
 
 ## Requirements
 
 - Omarchy with the Quickshell-based shell (`omarchy plugin` available)
 - A Navidrome or OpenSubsonic server
 - `python3` — standard library only, nothing to install
-- Optional: [NaviBeat](https://navibeat.app), whose credentials are picked up
-  automatically
+- Recommended: [NaviBeat Linux](https://github.com/nenadjokic/navibeat-linux),
+  whose credentials are picked up automatically and whose tracks resolve exactly
 
 ## Install
 
@@ -89,6 +100,13 @@ device is being followed.
 Click a session under **playing elsewhere** and the bar follows that device
 instead: its track scrolls in the top bar, with the artwork and a live progress
 bar. `BACK` returns to this machine.
+
+**Which devices show up.** Anything reporting now-playing to the same server, not
+only NaviBeat — the list is the server's own `getNowPlaying`, so other Subsonic
+clients appear here too. What NaviBeat adds is the live part: its sessions report
+playback state and position, which is what moves the progress bar. A client that
+reports neither is still followable and still shows its track, artwork and quality,
+just without the bar advancing.
 
 **What you are watching only ever changes when you click.** If the followed
 device pauses, sleeps or drops off the network it stops reporting within a
@@ -258,7 +276,10 @@ paused before you looked may not be listed. Check with `omarchy-navibeat
 nowplaying`, which shows exactly what the server reports.
 
 **Stars and ratings are greyed out.** The track could not be matched to a server
-song. `omarchy-navibeat find 'artist|album|title'` shows what the matcher sees.
+song — either it is not in your library at all, or the player offered metadata too
+vague to match confidently. `omarchy-navibeat find 'artist|album|title'` shows what
+the matcher sees. Running NaviBeat avoids the question entirely: it puts the song id
+in `mpris:trackid`, so nothing is searched for.
 
 **A new widget does not appear.** Hot-reload does not create bar widget
 instances. `omarchy restart shell`.
