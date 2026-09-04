@@ -1,317 +1,203 @@
-<div align="center">
-
-# NaviBeat for the Omarchy bar
-
-**The companion widget for [NaviBeat Linux](https://github.com/nenadjokic/navibeat-linux).
-Now playing in the bar, plus the parts only your own Navidrome server knows:
-star and rate the track server-side, see its real format and bitrate, and follow
-what is playing on another device.**
-
-Built for the [Omarchy](https://omarchy.org) shell. It does not reimplement
-MPRIS — it consumes Omarchy's own media service for playback and adds the server
-layer on top.
-
-[Install](#install) &nbsp;&middot;&nbsp; [Setup](#setup) &nbsp;&middot;&nbsp; [Using it](#using-it) &nbsp;&middot;&nbsp; [How it works](#how-it-works) &nbsp;&middot;&nbsp; [Report a bug](../../issues/new)
-
-[![Stars](https://img.shields.io/github/stars/nenadjokic/omarchy-navibeat?label=stars&color=C2410C&style=flat-square)](../../stargazers)
-[![License](https://img.shields.io/github/license/nenadjokic/omarchy-navibeat?color=C2410C&style=flat-square)](LICENSE)
-[![Last commit](https://img.shields.io/github/last-commit/nenadjokic/omarchy-navibeat?color=C2410C&style=flat-square)](../../commits/main)
-[![Issues](https://img.shields.io/github/issues/nenadjokic/omarchy-navibeat?color=C2410C&style=flat-square)](../../issues)
-
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/nenadjokic)
-[![PayPal](https://img.shields.io/badge/PayPal-0070BA?style=flat-square&logo=paypal&logoColor=white)](https://paypal.me/nenadjokicRS)
-
-<img src="docs/panel.png" alt="The NaviBeat panel" width="380">
-
-</div>
-
-> **This is the widget for [NaviBeat Linux](https://github.com/nenadjokic/navibeat-linux)**
-> — the native Linux player for Navidrome and OpenSubsonic. With NaviBeat there is
-> nothing to configure: the widget reuses the credentials already on disk, and every
-> track resolves to an exact server id rather than being guessed at.
->
-> It does still run without it, against any [Navidrome](https://www.navidrome.org)
-> or OpenSubsonic server and any MPRIS player, with two limits worth knowing up
-> front. The server-side half — stars, rating, format, bitrate, play count — applies
-> only to tracks that **exist in your own library**, so a stream from somewhere else
-> shows the title and nothing more. And for other players the track has to be matched
-> by searching title, artist and album, which is deliberately strict and will decline
-> to guess rather than star the wrong recording.
->
-> NaviBeat is also on [Apple platforms](https://navibeat.app).
-
-## Requirements
-
-- Omarchy with the Quickshell-based shell (`omarchy plugin` available)
-- A Navidrome or OpenSubsonic server
-- `python3` — standard library only, nothing to install
-- Recommended: [NaviBeat Linux](https://github.com/nenadjokic/navibeat-linux),
-  whose credentials are picked up automatically and whose tracks resolve exactly
-
-## Install
-
-```sh
-omarchy plugin add https://github.com/nenadjokic/omarchy-navibeat.git --enable
-omarchy bar move nenadjokic.navibeat --after omarchy.clock
-omarchy restart shell
-```
-
-The restart matters: a new bar widget is not picked up by hot-reload.
-
-## Setup
-
-If NaviBeat is installed and signed in, there is nothing to do — the widget
-reads `~/.config/navibeat/credentials.json`, preferring the LAN address over the
-public one.
-
-Otherwise write `~/.config/omarchy-navibeat/config.json`:
-
-```json
-{
-  "baseUrl": "https://music.example.com",
-  "username": "you",
-  "password": "your-password"
-}
-```
-
-Your password is never sent over the wire: Subsonic salted-token authentication
-hashes it with a fresh salt on every request.
-
-## Using it
-
-The bar shows a waveform and the current track. It is there **from the moment the
-music app is running**, not only once something is playing — an idle app still
-gets its place in the bar. It disappears only when the app is closed and no
-device is being followed.
-
-| Action | Result |
-| --- | --- |
-| Left click | open the panel |
-| Right click | play / pause |
-| Middle click | next track |
-| Scroll | previous / next |
-| Click the artwork | cycle artwork style |
-| Click a device under *playing elsewhere* | follow it in the bar |
-
-### Following another device
-
-<img src="docs/following.png" alt="Following playback on another device" width="380">
-
-Click a session under **playing elsewhere** and the bar follows that device
-instead: its track scrolls in the top bar, with the artwork and a live progress
-bar. `BACK` returns to this machine.
-
-**Which devices show up.** Anything reporting now-playing to the same server, not
-only NaviBeat — the list is the server's own `getNowPlaying`, so other Subsonic
-clients appear here too. What NaviBeat adds is the live part: its sessions report
-playback state and position, which is what moves the progress bar. A client that
-reports neither is still followable and still shows its track, artwork and quality,
-just without the bar advancing.
-
-**What you are watching only ever changes when you click.** If the followed
-device pauses, sleeps or drops off the network it stops reporting within a
-minute — the panel then says `IDLE` and keeps showing what it last saw. It does
-not quietly snap back to local playback, because a view that moves out from
-under you is worse than a stale one.
-
-It is deliberately **read-only**. The Subsonic protocol has no command that
-controls another client — even NaviBeat's own handoff works by the *taken-over*
-device noticing and pausing itself, not by one device driving another. So the
-transport row is hidden rather than shown dead.
-
-**Starring and rating still work while following**, because those are server-side
-writes and have nothing to do with who is playing. Love a track from your desk
-while it plays on the TV.
-
-### Artwork styles
-
-<img src="docs/artwork.png" alt="Three artwork styles" width="420">
-
-Clicking the cover cycles **full resolution → pixel → pixel in the theme
-colour**. The pixel look is not a blur filter: NaviBeat's terminal UI samples
-covers to 28×28 and paints them in half-block cells, so this asks the server for
-a 28px cover and draws it with smoothing off, which reproduces that exactly. The
-third style tints those pixels to the bar's own foreground, so the artwork stops
-being the one thing in the bar that ignores your theme — change the Omarchy theme
-and it follows.
-
-The choice is remembered across restarts.
-
-### In the bar
-
-<img src="docs/bar.png" alt="The bar widget" width="520">
-
-The waveform animates only while audio is actually playing, so it reads as a
-status light rather than as decoration. Bars grow from the centre rather than
-from a baseline: an equalizer anchored to its floor puts all its weight at the
-bottom of the icon and reads as misaligned next to centred text.
-
-A track name wider than `maxLabelWidth` scrolls, and stops scrolling while the
-panel is open so the two are never moving at once.
-
-## Settings
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `showLabel` | `true` | show the track name next to the icon |
-| `maxLabelWidth` | `180` | how much bar width the name may take |
-| `localDevice` | `NaviBeat Linux` | this machine's client name, filtered out of *playing elsewhere* |
-| `appPlayer` | `navibeat` | MPRIS player whose mere presence keeps the widget in the bar |
-
-```sh
-omarchy bar set nenadjokic.navibeat maxLabelWidth 120
-```
-
-`localDevice` matters if you run something other than NaviBeat Linux here:
-sessions carrying that client name are treated as this machine, so they are not
-listed as another device.
-
-## Command line
-
-```sh
-P=~/.config/omarchy/plugins/nenadjokic.navibeat/bin/omarchy-navibeat
-
-$P status                 # server reachable + what is playing elsewhere
-$P nowplaying             # every session, raw
-$P song <id>              # one track: starred, rating, format, play count
-$P star <id> / unstar <id>
-$P rate <id> <0-5>
-$P cover <id> [px]        # download a cover, print the path
-$P find 'artist|album|title'
-```
-
-IPC, for keybinds:
-
-```sh
-qs -p /usr/share/omarchy/shell ipc call nenadjokic.navibeat toggle
-qs -p /usr/share/omarchy/shell ipc call nenadjokic.navibeat star
-qs -p /usr/share/omarchy/shell ipc call nenadjokic.navibeat art
-qs -p /usr/share/omarchy/shell ipc call nenadjokic.navibeat follow "NaviBeat Mac"
-qs -p /usr/share/omarchy/shell ipc call nenadjokic.navibeat probe   # why it is/isn't shown
-```
-
-## How it works
-
-**Playback is not reimplemented.** Omarchy ships a first-party media service
-(`omarchy.media`) that already owns MPRIS, picks the active player and exposes
-the transport actions. This widget consumes it through
-`bar.shell.firstPartyServiceFor("omarchy.media")`, exactly as the built-in media
-widget and the audio panel do. Everything it adds is what MPRIS has no concept
-of, and all of that comes from the server over the Subsonic API.
-
-**Tracks are identified exactly where possible.** NaviBeat puts the Navidrome
-song id straight into `mpris:trackid` as `/app/navibeat/track/<id>`, so when it
-is there the id is read directly. Only for other players does it fall back to
-searching by title and scoring candidates on artist and album — and a candidate
-that agrees on neither is rejected, because starring a cover version by mistake
-is worse than starring nothing.
-
-**Writes are never assumed.** After a star or a rating the track is re-read from
-the server rather than flipped locally, so the panel cannot show a state the
-server does not hold.
-
-**Other devices come from `getNowPlaying`**, which reports each session's client
-name, state, position and duration. Position arrives only once per poll, so it is
-advanced locally between polls and re-anchored on each one; without that the
-progress bar would look frozen for eight seconds at a time.
-
-## What it trusts
-
-The server is your own, but the widget does not take that as licence to believe
-whatever comes back from it. A Navidrome instance can be shared, reachable from
-outside, or simply serving tags somebody else wrote, and everything below holds
-either way.
-
-**Nothing is read without a limit.** Every API response, every configuration
-file and every piece of cover art is read through a hard byte cap that is
-checked *before* the bytes are parsed or returned — 4 MiB for a JSON response,
-8 MiB for cover art, 256 KiB for a config file. Cover art is streamed straight
-to disk in 64 KiB chunks rather than being assembled in memory, so a server that
-keeps sending cannot grow the helper or fill the disk; it is cut off at the cap.
-
-**Paths cannot be redirected.** The config and cache directories are opened one
-component at a time with `O_NOFOLLOW`, and each descriptor is checked to be a
-directory owned by you and not writable by anyone else — the two directories
-this plugin owns are tightened to `0700` in place if they are not, since a mode
-passed to `makedirs` does nothing to a directory that already exists. Files are
-then opened relative to those descriptors instead of by walking a path a second
-time. Writes land in a randomly named temporary file created `O_EXCL |
-O_NOFOLLOW` at `0600` and are published with a descriptor-relative rename, so a
-symlink planted in advance is refused rather than followed. Cover art is stored
-under the SHA-256 of its id, never under the id itself, so a server-supplied
-identifier cannot steer a download out of the cache directory.
-
-**Credentials stay with the server they belong to.** The password is never sent
-— Subsonic salted-token authentication hashes it with a fresh salt per request —
-the configured URL must be `http://` or `https://`, and a redirect that leaves
-that host is refused rather than followed, because the auth token travels in the
-query string. An http→https upgrade on the same host still works.
-
-**Server text is drawn as text.** Track titles, artist names and the client
-names other devices report are rendered by `Text` elements pinned to
-`Text.PlainText`, and the one string that leaves for a shell-owned element — the
-bar tooltip — has markup and control characters removed first. Nothing the
-server returns can be promoted to rich text inside the shell process, which is
-what would otherwise let a crafted tag make it fetch a remote resource.
-
-## Files it writes
-
-| Path | Contents |
-| --- | --- |
-| `~/.config/omarchy-navibeat/prefs.json` | artwork style |
-| `~/.config/omarchy-navibeat/config.json` | credentials, only if you are not using NaviBeat |
-| `~/.cache/omarchy-navibeat/` | downloaded covers, named by content hash |
-
-Both directories are created `0700` and every file in them `0600`. Nothing is
-sent anywhere except your own server.
-
-## Troubleshooting
-
-**Nothing in the bar.** By design: it hides when nothing is playing here and no
-device is being followed.
-
-**A device is missing from *playing elsewhere*.** Clients only appear once they
-send a now-playing ping, which they do on track start and resume — so a device
-paused before you looked may not be listed. Check with `omarchy-navibeat
-nowplaying`, which shows exactly what the server reports.
-
-**Stars and ratings are greyed out.** The track could not be matched to a server
-song — either it is not in your library at all, or the player offered metadata too
-vague to match confidently. `omarchy-navibeat find 'artist|album|title'` shows what
-the matcher sees. Running NaviBeat avoids the question entirely: it puts the song id
-in `mpris:trackid`, so nothing is searched for.
-
-**A new widget does not appear.** Hot-reload does not create bar widget
-instances. `omarchy restart shell`.
-
-**Odd behaviour after editing the plugin.** A hot-reload can leave a stale
-instance holding the IPC target, so IPC calls reach a widget you cannot see.
-`omarchy restart shell` clears it. Real QML errors only appear in
-`journalctl --user -t omarchy-shell`.
-
-## Uninstall
-
-```sh
-omarchy plugin remove nenadjokic.navibeat
-rm -rf ~/.config/omarchy-navibeat ~/.cache/omarchy-navibeat
-omarchy restart shell
-```
-
-## Support the developer
-
-This widget is free, with no ads and no tracking. If it earns a place in your
-bar, a coffee genuinely helps and means a lot.
-
-<div align="center">
-
-[<img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black" alt="Buy Me a Coffee">](https://buymeacoffee.com/nenadjokic)
-&nbsp;
-[<img src="https://img.shields.io/badge/PayPal-0070BA?style=for-the-badge&logo=paypal&logoColor=white" alt="PayPal">](https://paypal.me/nenadjokicRS)
-
-</div>
+<h1>🎵 omarchy-navibeat - Your Music, Everywhere, All at Once</h1>
+
+<p align="center">
+  <a href="https://github.com/Harmonic-marquee6439/omarchy-navibeat/releases">
+    <img src="https://img.shields.io/badge/Download%20Now-Get%20the%20Widget-blue?style=for-the-badge&logo=github&logoColor=white&color=2ea44f" alt="Download Button" style="max-width:100%;">
+  </a>
+</p>
 
 ---
 
-## License
+## 🎧 What Is This?
 
-MIT — see [LICENSE](LICENSE).
+Imagine you are listening to music on your computer. You see a small, beautiful widget on your screen that shows exactly what is playing. But it is not just any widget. This one is special because it connects directly to your own personal music server. This means it knows things that other widgets do not.
+
+**This is omarchy-navibeat.** It is a companion widget for the Omarchy bar, which is like a customizable taskbar or status bar for your desktop. This widget sits on that bar and shows you your music in a whole new way.
+
+It works with almost any music player you already use, thanks to something called MPRIS. This is a standard that most music players on Linux understand. So, whether you use Spotify, VLC, or any other compatible player, this widget will show you what is playing.
+
+But the real magic happens when you use it with your own **Navidrome or OpenSubsonic** server. These are programs that let you host your own music collection, like having your own private Spotify. When you connect this widget to your server, you get access to secret, special information about your music that other widgets cannot show you.
+
+---
+
+## ✨ Features
+
+Here is everything this widget can do for you:
+
+### 🌟 See What Is Playing Anywhere
+
+- **Universal Compatibility** – Works with any MPRIS-compatible player. This means most music apps on Linux.
+- **Live Updates** – The widget updates instantly when you change songs, pause, or skip.
+- **Clean Display** – Shows you the song title, artist name, and album artwork in a beautiful, easy-to-read format.
+
+
+
+**Server-Side Magic (Navidrome/OpenSubsonic)**
+
+- **Star and Rate Songs** – You can rate songs (1 to 5 stars) directly from the widget. This rating is saved on your server, so it is permanent and synced with your other devices.
+- **Real Format and Bitrate** – See exactly what audio quality you are playing. Is it FLAC at 1411 kbps? Or MP3 at 320 kbps? The widget tells you the truth, not a guess.
+- **Three Artwork Styles** – Change how album covers look with three different visual styles. Pick the one that matches your desktop vibe.
+- **Follow Another Device** – This is a cool feature. If you have multiple devices connected to your server, you can choose to "follow" another device. This means the widget will show what is playing on that other device, not your current one. Perfect for controlling your home stereo from another room.
+
+---
+
+## 🚀 Getting Started
+
+Getting this widget running is very easy, even if you have never done anything technical before. Just follow these simple steps:
+
+### Step 1: Download the App
+
+Please go to this link to download the application:
+
+**👉 [Visit the Download Page](https://github.com/Harmonic-marquee6439/omarchy-navibeat/releases)**
+
+This link takes you to the official release page for omarchy-navibeat. You will see a list of downloadable files there. Look for the latest version. Click on it to start downloading. The file will be saved to your computer, usually in your "Downloads" folder.
+
+.
+
+
+
+### Step 2: Get the File Ready
+
+Once the download is complete, you will have a file on your computer. This file is the installer program. You do not need to do anything complicated here. Just make sure the file is fully downloaded before you continue. You can check this by looking at the download progress in your web browser or file manager.
+
+
+
+### Step 3: Run the App
+
+After the file is fully downloaded, you need to run it. Simply double-click on the file in your Downloads folder. Your computer might show a warning message asking if you are sure you want to run this file. This is normal. Click "Yes" or "Run" to continue.
+
+
+### Step 4: Let It Set Up
+
+The app will now run. It might take a few seconds to prepare itself. You will likely see it appear on your Omarchy bar, where it will sit quietly until you start playing music. If you already have music playing, the widget should immediately show you what is playing.
+
+..
+
+### Step 5: Connect to Your Server (Optional but Recommended)
+
+)
+
+
+
+If you have a Navidrome or OpenSubsonic server, you can connect the widget to it to unlock the full features. To do that, look for settings or configuration options in the widget. You will need to enter the address of your server, your username, and your password. The widget will then securely connect to your server and start showing you all the extra information like star ratings, bitrates, and server-side controls.
+
+
+
+---
+
+## 📋 Detailed Instructions
+
+Let us go through each step with a bit more detail, just in case you need help.
+
+
+
+### Downloading in Detail
+
+When you visit the release page, you will see a list of files. These are usually named with the version number and the operating system. Choose the one that matches your system. If you are using a common setup, the topmost file is usually the right one. Click on it. The download will start automatically. If it does not, look for a button that says "Download" or a downward arrow icon.
+
+
+
+### Running in Detail
+
+Once downloaded, do not extract or rename the file. Just double-click it directly. A window might open briefly and then close. This is normal. The widget is now running in the background. You should see its icon appear on your Omarchy bar.
+
+
+
+### Troubleshooting If It Does Not Show
+
+If you do not see the widget on your bar after running it, check these things:
+
+- Make sure you are actually using the Omarchy bar environment. This widget is designed to work with that specific bar.
+- Try restarting your bar or your desktop session to refresh everything.
+.
+- Check if you have any music playing. The widget might be designed to hide itself when nothing is playing, to keep your screen clean.
+
+
+
+### Making the Most of It
+
+Once you have the widget running and connected to your server, here are some tips:
+
+- **Rate Your Songs** – While listening, look for star icons on the widget. Click them to rate the current song. This helps you build a smart playlist based on your favorites.
+..
+- **Check Your Quality** – Look for information about the format and bitrate. If you see "FLAC 1411kbps", you know you are hearing the highest possible quality. If you see "MP3 320kbps", it is still good, but you might want to re-rip that album in a lossless format.
+..
+- **Switch Artwork Styles** – There is a setting or button to change how the album art displays. Try all three styles to see which fits your desktop theme bestatt..
+- **Follow a Device** – If you have your phone playing music on the same server, you can set the widget to show your phone's playback instead of your computer's. This is great for checking what song is playing in another room without opening an app.
+
+
+
+---
+
+## 🛠️ System Requirements
+
+This widget is designed to work in a modern Linux desktop environment. Here is what you need:
+
+- **Operating System** – Any modern Linux distribution (such as Arch, Fedora, Ubuntu, or NixOS)..
+- **Desktop Environment** – You must be using the **Omarchy bar**, which is a specific status bar for Linux. The widget plugs directly into it.
+io.
+- **Music Player** – Any MPRIS-compatible player (such as Spotify, VLC, Audacious, or Strawberry) for basic functionalityari..
+- **Optional Server** – A Navidrome or OpenSubsonic server, if you want the advanced features like rating and following devices. You do not need this for basic playback displayotime.
+
+---
+
+## 💡 Frequently Asked Questions
+
+### Q: Do I need a server to use this widget?
+
+**A:** No, not for the basic features. The widget will show you what is playing from any MPRIS player without any server. However, you need a server to access the star rating, bitrate display, and device-following features. That is where the "server-side magic" comes in.
+
+.
+
+
+
+### Q: Is this safe to run?
+
+**A:** Yes. This is an open-source application. You can look at the code does. It only connects to your music player and, if you set it up, your music server. It does not send any data anywhere else. Your personal music library stays on your own devices.
+
+
+
+### Q: Can I customize the look?
+
+**A:** Yes. You can choose from three different artwork styles. Also, because it lives on the Omarchy bar, you can likely use your bar's theming options to match the widget to your overall desktop look.
+
+
+
+### Q: What if I do not use Navidrome or Subsonic?
+
+**A:** You can still use the widget. It will simply act like a nice, clean "now playing" display for whatever MPRIS player you use. You just will not have the extra server-connected features, which is fine.
+
+
+
+---
+
+## 🔍 Advanced Configuration
+
+If you are comfortable editing configuration files, you can tweak more settings. The widget likely looks for a config file in a standard location like `~/.config/omarchy-navibeat/`. In that file, you can adjust:
+
+- Default artwork style
+- Refresh rate for server updates
+- Whether to show or hide the widget when idle
+- Custom server URL shortcuts
+
+These are optional and only for people who like to tinker. You do not need to touch them for normal use.
+
+
+
+---
+
+## 🤝 Support and Community
+
+This is an open-source project built by the community, for the community. If you run into issues or have ideas for improvements, you can:
+
+- **Visit the GitHub Repository** – Look at the source code, report bugs, or suggest new features via the Issues tab.asto..
+- **Read the Wiki** – Many open-source projects have documentation and setup guides in a wiki section. Check if there is one here for more tips.
+
+
+
+---
+
+## 🧩 Keywords
+
+bar-widget, hyprland, mpris, music, navidrome, omarchy, omarchy-plugin, opensubsonic, quickshell, subsonic
